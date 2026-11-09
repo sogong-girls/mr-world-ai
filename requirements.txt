@@ -1,0 +1,10 @@
+pydantic==2.14.1
+python-dotenv==1.2.4
+httpx==0.28.1
+openai==3.37.0
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+webrtcvad-wheels==2.0.14.post1
+imageio-ffmpeg==0.6.0
+pytest==9.1.1
