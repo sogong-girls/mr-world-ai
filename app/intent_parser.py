@@ -32,7 +32,7 @@ slots
 - hotelGrade: 3성=_3_STAR, 4성=_4_STAR, 5성=_5_STAR
 - foodType: 도시락=LUNCHBOX, 현지식=LOCAL_RESTAURANT, 스테이크/고급 식사=PREMIUM_RESTAURANT
 - startDate: 출발 날짜 YYYY-MM-DD. '오늘' 줄의 날짜와 요일을 기준으로 계산하고, 연도 없이 말한 날짜가 지났으면 내년. 요일로 말하면 달력에서 찾는다. 다음 주는 오늘이 있는 주(월~일)의 다음 주
-- addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다
+- addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다. 이미 넣은 것에 더하는 말('~에도', '추가')이면 replace=false, 이미 넣은 것을 다른 일차나 끼니로 옮기는 말('~로 바꿔줘', '~ 말고', '~ 대신')이면 replace=true로 하고 nthDays, meals에는 새로 넣을 것만 적는다
 - noAddons: 커피/샴페인을 넣지 않겠다고 함
 - useDefaults: '나머지는 기본으로'처럼 남은 항목을 기본값으로 하겠다고 함
 - answer: 직전 질문에 대한 대답이면 YES 또는 NO
@@ -94,7 +94,7 @@ class IntentParser:
         self.settings = settings
         self._client = None
         if settings.openai_api_key:
-            self._client = OpenAI(api_key=settings.openai_api_key, timeout=10.0, max_retries=1)
+            self._client = OpenAI(api_key=settings.openai_api_key, timeout=6.0, max_retries=0)
 
     def parse(self, text: str, context: CommandContext, tours: list[Tour]) -> NLUResult:
         if self._client is None:
@@ -158,12 +158,12 @@ class IntentParser:
         return NLUResult(intent=intent, confidence=confidence, slots=slots)
 
     def _intent(self, text: str, slots: Slots) -> Intent:
+        if re.search(r"(지난번|저번|전에).*(똑같이|그대로|다시)", text):
+            return Intent.REBOOK
         if re.search(r"예약\s*(할게|해\s*줘|해\s*주세요|하겠|진행)", text):
             return Intent.SUBMIT_BOOKING
         if re.search(r"얼마|가격|금액|비용", text):
             return Intent.CHECK_PRICE
-        if re.search(r"(지난번|저번|전에).*(똑같이|그대로|다시)", text):
-            return Intent.REBOOK
         if re.search(r"(지난|이전|예전)\s*(여행|예약)", text):
             return Intent.VIEW_HISTORY
         if re.search(r"(어떤|무슨)\s*투어|투어\s*(종류|목록|뭐)", text):
@@ -222,11 +222,13 @@ class IntentParser:
             if re.search(word + r"(날|째\s*날)", text):
                 days.append(number)
         meals = [meal for pattern, meal in MEAL_WORDS.items() if re.search(pattern, text)]
-        return [AddonSlot(addonType=addonType, nthDays=sorted(set(days)), allDays="매일" in text, meals=meals)]
+        return [AddonSlot(addonType=addonType, nthDays=sorted(set(days)), allDays="매일" in text, meals=meals,
+                          replace=bool(re.search(r"바꿔|변경|옮겨", text)))]
 
     def _answer(self, text: str) -> str | None:
         stripped = text.strip()
-        if re.match(r"(네|예|응|좋아|그래|맞아)요?(?=\s|[.!,~]|$)(?!\s*(명|분|사람))", stripped):
+        if re.match(r"(네|예|넵|넹|응|좋아|좋습니다|그래|맞아|그걸로|그렇게)+요?(?=\s|[.!,~]|$)(?!\s*(명|분|사람))",
+                    stripped):
             return "YES"
         if re.match(r"(아니|아뇨|싫어)", stripped):
             return "NO"

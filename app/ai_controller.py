@@ -33,7 +33,10 @@ class AIController:
 
     def textCommand(self, request: Request, body: TextCommandRequest) -> CommandResponse:
         self._guard(request)
-        return self.chatService.reply(body.text.strip(), body.context)
+        text = body.text.strip()
+        if not text:
+            raise ApiError(400, "INVALID_REQUEST", "내용을 입력해 주세요.")
+        return self.chatService.reply(text, body.context)
 
     def health(self) -> dict:
         try:

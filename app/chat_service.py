@@ -241,13 +241,17 @@ class ChatService:
         if style is None:
             warn(warnings, WarningCode.OPTION_NOT_AVAILABLE, "이 투어에는 그 스타일이 없어요.")
             return
+        old = next((s for s in tour.styles if s.id == draft.tourStyleId), None)
+        styleChanged = old is not None and old.id != style.id
         draft.tourStyleId = style.id
         confirm(confirmed, DraftField.tourStyleId)
 
-        if DraftField.hotelOptionId not in confirmed:
-            draft.hotelOptionId = style.hotelOptionId
-        if DraftField.foodOptionId not in confirmed:
-            draft.foodOptionId = style.foodOptionId
+        for field in (DraftField.hotelOptionId, DraftField.foodOptionId):
+            newDefault = getattr(style, field)
+            if styleChanged and getattr(draft, field) == getattr(old, field) and newDefault != getattr(old, field):
+                unconfirm(confirmed, field)
+            if field not in confirmed:
+                setattr(draft, field, newDefault)
 
     def _applyAddon(self, tour: Tour, addon: AddonSlot, draft: BookingDraft,
                     confirmed: list[DraftField], warnings: list[AiWarning]):
@@ -255,21 +259,25 @@ class ChatService:
         if option is None:
             warn(warnings, WarningCode.OPTION_NOT_AVAILABLE, "이 투어에는 그 추가 옵션이 없어요.")
             return
+        wanted = list(dict.fromkeys(addon.nthDays))
         if addon.allDays:
             days = list(range(1, tour.days + 1))
         else:
-            days = [day for day in addon.nthDays if 1 <= day <= tour.days]
-        if not days or len(days) < len(addon.nthDays):
+            days = [day for day in wanted if 1 <= day <= tour.days]
+        if not days or len(days) < len(wanted):
             warn(warnings, WarningCode.DAY_OUT_OF_RANGE,
                  f"{tour.name}는 {tour.days}일 일정이에요. 1~{tour.days}일차 중에서 골라 주세요.")
             if not days:
                 return
-        meals = addon.meals or ALL_MEALS
+        meals = list(dict.fromkeys(addon.meals)) or ALL_MEALS
 
-        draft.bookingAddons = [item for item in draft.bookingAddons if item.addonOptionId != option.id]
+        if addon.replace:
+            draft.bookingAddons = [item for item in draft.bookingAddons if item.addonOptionId != option.id]
         for day in days:
             for meal in meals:
-                draft.bookingAddons.append(BookingAddon(addonOptionId=option.id, nthDay=day, meal=meal))
+                item = BookingAddon(addonOptionId=option.id, nthDay=day, meal=meal)
+                if item not in draft.bookingAddons:
+                    draft.bookingAddons.append(item)
         confirm(confirmed, DraftField.bookingAddons)
 
     def _useDefaults(self, tour: Tour | None, draft: BookingDraft, confirmed: list[DraftField]):
@@ -290,7 +298,7 @@ class ChatService:
                 confirmed: list[DraftField], warnings: list[AiWarning]):
         past = next((p for p in pastBookings if p.id == pastBookingId), None)
         if past is None and pastBookings:
-            past = pastBookings[0]  
+            past = max(pastBookings, key=lambda p: p.startAt.replace(tzinfo=None) if p.startAt else datetime.min)
         tour = self.catalog.findTour(tourId=past.tourId) if past and past.tourId else None
         if tour is None:
             warn(warnings, WarningCode.TOUR_NOT_FOUND, "다시 예약할 지난 여행을 찾지 못했어요.")
