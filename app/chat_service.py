@@ -1,11 +1,3 @@
-"""ChatService: 고객 말을 draft에 반영하고 다음 질문을 만든다.
-
-replyToVoice(): 음성을 SpeechRecognizer로 문장으로 바꾼 뒤 reply()와 같이 처리한다.
-reply(): 문장 하나를 처리해 CommandResponse를 돌려준다.
-_applyChanges(): IntentParser가 뽑은 뜻(slots)을 TourCatalog로 id로 바꿔 draft에 넣고 규칙을 검사한다.
-_askMissing(): 남은 항목 중 최대 2개를 묻는 문장을 만든다.
-서버는 대화를 기억하지 않는다. 프론트가 매번 context(draft, 확인된 항목, 지난 예약, 최근 말)를 보낸다.
-"""
 from datetime import datetime, time
 
 from app.dto import (AddonSlot, AddonType, AiWarning, BookingAddon, BookingDraft, CommandContext,
@@ -16,15 +8,14 @@ from app.intent_parser import IntentParser, today_kst
 from app.speech_recognizer import SpeechRecognizer
 from app.tour_catalog import Tour, TourCatalog
 
-CHECKLIST = list(DraftField)[:7]  # 확인받을 7개 (endAt은 출발일로 자동 계산)
-GRAND_ONLY = [TourTheme.HONEYMOON, TourTheme.PARENT]  # 그랜드 이상만 고를 수 있는 테마
+CHECKLIST = list(DraftField)[:7]  
+GRAND_ONLY = [TourTheme.HONEYMOON, TourTheme.PARENT] 
 ALL_MEALS = [Meal.BREAKFAST, Meal.LUNCH, Meal.DINNER]
 TOUR_OPTIONS = [DraftField.tourStyleId, DraftField.hotelOptionId, DraftField.foodOptionId,
-                DraftField.bookingAddons]  # 투어마다 id가 다른 항목
+                DraftField.bookingAddons]  
 PRICE_FIELDS = [DraftField.tourId, DraftField.participantsCount, DraftField.tourStyleId,
-                DraftField.hotelOptionId, DraftField.foodOptionId]  # 금액 계산에 필요한 항목
+                DraftField.hotelOptionId, DraftField.foodOptionId] 
 
-# 답 문장에 쓰는 한국어 이름
 STYLE_NAMES = {TourStyleType.CLASSIC: "클래식", TourStyleType.GRAND: "그랜드", TourStyleType.PREMIUM: "프리미엄"}
 HOTEL_NAMES = {HotelGrade.STAR_3: "3성급 호텔", HotelGrade.STAR_4: "4성급 호텔", HotelGrade.STAR_5: "5성급 호텔"}
 FOOD_NAMES = {FoodType.LUNCHBOX: "도시락", FoodType.LOCAL_RESTAURANT: "현지식",
@@ -51,7 +42,6 @@ def warn(warnings: list[AiWarning], code: WarningCode, message: str):
 
 
 def ro(word: str) -> str:
-    """word 뒤에 '로' 또는 '으로'를 붙인다 (받침이 있으면 '으로', ㄹ 받침은 '로')."""
     code = ord(word[-1]) - 0xAC00
     if 0 <= code < 11172 and code % 28 not in (0, 8):
         return word + "으로"
@@ -59,7 +49,6 @@ def ro(word: str) -> str:
 
 
 def next_questions(missing: list[DraftField]) -> list[DraftField]:
-    """다음에 물을 항목: 남은 항목 앞 2개. 스타일을 정하기 전에는 호텔, 식사를 묻지 않는다."""
     asked = missing[:2]
     if DraftField.tourStyleId in asked:
         asked = [field for field in asked if field not in (DraftField.hotelOptionId, DraftField.foodOptionId)]
@@ -67,7 +56,6 @@ def next_questions(missing: list[DraftField]) -> list[DraftField]:
 
 
 def min_people(tour: Tour) -> int:
-    """투어 확정에 필요한 최소 인원 (허니문 2명, 나머지 3명)."""
     return 2 if tour.tourTheme == TourTheme.HONEYMOON else 3
 
 
@@ -75,11 +63,10 @@ class ChatService:
     def __init__(self, catalog: TourCatalog, parser: IntentParser, recognizer: SpeechRecognizer | None = None):
         self.catalog = catalog
         self.parser = parser
-        self.recognizer = recognizer  # 음성을 쓰지 않는 시험에서는 없어도 된다
+        self.recognizer = recognizer 
 
     def replyToVoice(self, audio: bytes, context: CommandContext | None = None,
                      contentType: str | None = None) -> CommandResponse:
-        """녹음한 음성 → 문장(SpeechRecognizer) → reply()와 같은 처리."""
         if self.recognizer is None:
             raise ApiError(503, "STT_UNAVAILABLE", "음성 인식을 쓸 수 없어요. 글로 입력해 주세요.")
         transcript = self.recognizer.transcribe(audio, self.catalog.getAllTours(), contentType)
@@ -88,26 +75,24 @@ class ChatService:
         return self.reply(transcript, context)
 
     def reply(self, text: str, context: CommandContext | None = None) -> CommandResponse:
-        """문장 하나 → 뜻 파악(IntentParser) → draft 반영(_applyChanges) → 답 문장(_askMissing)."""
         context = context or CommandContext()
         tours = self.catalog.getAllTours()
         nluResult = self.parser.parse(text, context, tours)
 
         before = context.draft or BookingDraft()
-        draft = before.model_copy(deep=True)  # 받은 draft는 두고 복사본을 고친다
-        # 확인된 항목은 값이 있는 것만 믿는다 (프론트가 잘못 보내도 요약에서 멈추지 않게)
+        draft = before.model_copy(deep=True)  
         confirmedBefore = [field for field in CHECKLIST if field in context.confirmedFields
                            and (field == DraftField.bookingAddons or getattr(before, field) is not None)]
         confirmed = list(confirmedBefore)
         warnings = self._applyChanges(nluResult, draft, confirmed, context.pastBookings)
 
         changed = [field for field in DraftField if getattr(before, field) != getattr(draft, field)]
-        confirmed = [field for field in CHECKLIST if field in confirmed]  # 체크리스트 순서로
+        confirmed = [field for field in CHECKLIST if field in confirmed]  
         missing = [field for field in CHECKLIST if field not in confirmed]
         intent = nluResult.intent
         if nluResult.slots.answer == "YES" and len(confirmedBefore) == len(CHECKLIST) and not missing:
-            intent = Intent.SUBMIT_BOOKING  # 요약 뒤 "이대로 예약할까요?"에 "네"
-        # 커피, 샴페인 질문에 "네"만 했으면 몇째 날 어느 끼니인지 다시 묻는다
+            intent = Intent.SUBMIT_BOOKING  
+
         askedBefore = next_questions([field for field in CHECKLIST if field not in confirmedBefore])
         wantsAddons = nluResult.slots.answer == "YES" and DraftField.bookingAddons in askedBefore
         tour = self.catalog.findTour(tourId=draft.tourId) if draft.tourId else None
@@ -124,7 +109,6 @@ class ChatService:
             warnings=warnings,
         )
 
-    # ----- 고객이 말한 것을 draft에 반영 -----
 
     def _applyChanges(self, nluResult: NLUResult, draft: BookingDraft, confirmed: list[DraftField],
                       pastBookings: list[PastBooking]) -> list[AiWarning]:
@@ -132,20 +116,17 @@ class ChatService:
         slots = nluResult.slots
         warnings = []
 
-        # 0. 프론트가 보낸 draft를 지금 투어 정보로 다시 검사한다
         self._checkDraft(draft, confirmed, warnings)
 
-        # 1. 직전 질문에 예/아니요 (물어본 것은 next_questions로 다시 계산)
         asked = next_questions([field for field in CHECKLIST if field not in confirmed])
         if slots.answer == "YES":
             for field in asked:
                 if field != DraftField.bookingAddons and getattr(draft, field) is not None:
-                    confirm(confirmed, field)  # 추천해 둔 호텔, 식사를 그대로 쓰겠다는 뜻
+                    confirm(confirmed, field)  
         if slots.answer == "NO" and DraftField.bookingAddons in asked:
             draft.bookingAddons = []
             confirm(confirmed, DraftField.bookingAddons)
 
-        # 2. 투어 (지난 예약과 똑같이, 또는 이름이나 테마로)
         if nluResult.intent == Intent.REBOOK or slots.pastBookingId is not None:
             self._rebook(slots.pastBookingId, pastBookings, draft, confirmed, warnings)
         if slots.tourName or slots.tourTheme:
@@ -156,7 +137,6 @@ class ChatService:
                 self._setTour(tour, draft, confirmed)
         tour = self.catalog.findTour(tourId=draft.tourId) if draft.tourId else None
 
-        # 3. 인원
         if slots.participantsCount is not None:
             if slots.participantsCount < 1:
                 warn(warnings, WarningCode.PEOPLE_OUT_OF_RANGE, "인원은 1명 이상이어야 해요.")
@@ -164,7 +144,6 @@ class ChatService:
                 draft.participantsCount = slots.participantsCount
                 confirm(confirmed, DraftField.participantsCount)
 
-        # 4. 스타일, 호텔, 식사, addon (투어가 정해져야 id를 찾을 수 있다)
         if tour is None:
             if slots.tourStyle or slots.hotelGrade or slots.foodType or slots.addons:
                 warn(warnings, WarningCode.TOUR_NOT_SELECTED, "먼저 어떤 투어로 갈지 정해 주세요.")
@@ -188,7 +167,6 @@ class ChatService:
             for addon in slots.addons:
                 self._applyAddon(tour, addon, draft, confirmed, warnings)
 
-        # 5. addon 없음, 출발일, 차량
         if slots.noAddons:
             draft.bookingAddons = []
             confirm(confirmed, DraftField.bookingAddons)
@@ -196,16 +174,14 @@ class ChatService:
             if slots.startDate < today_kst():
                 warn(warnings, WarningCode.DATE_IN_PAST, "지난 날짜는 고를 수 없어요.")
             else:
-                draft.startAt = datetime.combine(slots.startDate, time(9, 0))  # 시각은 7번에서 투어대로
+                draft.startAt = datetime.combine(slots.startDate, time(9, 0))  
                 confirm(confirmed, DraftField.startAt)
         if slots.transportRequested:
             warn(warnings, WarningCode.TRANSPORT_NOT_CHANGEABLE, "차량은 투어마다 정해져 있어 바꿀 수 없어요.")
 
-        # 6. 나머지는 기본으로
         if slots.useDefaults:
             self._useDefaults(tour, draft, confirmed)
 
-        # 7. 출발, 도착 일시를 투어의 출발, 도착 시각에 맞춘다
         if draft.startAt and tour is not None:
             draft.startAt = tour.start_at(draft.startAt.date())
             draft.endAt = tour.end_at(draft.startAt.date())
@@ -265,13 +241,17 @@ class ChatService:
         if style is None:
             warn(warnings, WarningCode.OPTION_NOT_AVAILABLE, "이 투어에는 그 스타일이 없어요.")
             return
+        old = next((s for s in tour.styles if s.id == draft.tourStyleId), None)
+        styleChanged = old is not None and old.id != style.id
         draft.tourStyleId = style.id
         confirm(confirmed, DraftField.tourStyleId)
-        # 호텔, 식사는 스타일 기본값을 추천해 둔다 (확인은 따로 받음, 고객이 직접 고른 것은 그대로)
-        if DraftField.hotelOptionId not in confirmed:
-            draft.hotelOptionId = style.hotelOptionId
-        if DraftField.foodOptionId not in confirmed:
-            draft.foodOptionId = style.foodOptionId
+
+        for field in (DraftField.hotelOptionId, DraftField.foodOptionId):
+            newDefault = getattr(style, field)
+            if styleChanged and getattr(draft, field) == getattr(old, field) and newDefault != getattr(old, field):
+                unconfirm(confirmed, field)
+            if field not in confirmed:
+                setattr(draft, field, newDefault)
 
     def _applyAddon(self, tour: Tour, addon: AddonSlot, draft: BookingDraft,
                     confirmed: list[DraftField], warnings: list[AiWarning]):
@@ -279,25 +259,28 @@ class ChatService:
         if option is None:
             warn(warnings, WarningCode.OPTION_NOT_AVAILABLE, "이 투어에는 그 추가 옵션이 없어요.")
             return
+        wanted = list(dict.fromkeys(addon.nthDays))
         if addon.allDays:
             days = list(range(1, tour.days + 1))
         else:
-            days = [day for day in addon.nthDays if 1 <= day <= tour.days]
-        if not days or len(days) < len(addon.nthDays):
+            days = [day for day in wanted if 1 <= day <= tour.days]
+        if not days or len(days) < len(wanted):
             warn(warnings, WarningCode.DAY_OUT_OF_RANGE,
                  f"{tour.name}는 {tour.days}일 일정이에요. 1~{tour.days}일차 중에서 골라 주세요.")
             if not days:
                 return
-        meals = addon.meals or ALL_MEALS
-        # 같은 종류(커피 또는 샴페인)는 이번에 말한 것으로 바꾼다
-        draft.bookingAddons = [item for item in draft.bookingAddons if item.addonOptionId != option.id]
+        meals = list(dict.fromkeys(addon.meals)) or ALL_MEALS
+
+        if addon.replace:
+            draft.bookingAddons = [item for item in draft.bookingAddons if item.addonOptionId != option.id]
         for day in days:
             for meal in meals:
-                draft.bookingAddons.append(BookingAddon(addonOptionId=option.id, nthDay=day, meal=meal))
+                item = BookingAddon(addonOptionId=option.id, nthDay=day, meal=meal)
+                if item not in draft.bookingAddons:
+                    draft.bookingAddons.append(item)
         confirm(confirmed, DraftField.bookingAddons)
 
     def _useDefaults(self, tour: Tour | None, draft: BookingDraft, confirmed: list[DraftField]):
-        """남은 호텔, 식사는 스타일 기본값, addon은 없음으로 확인한다. 투어, 인원, 스타일, 날짜는 꼭 묻는다."""
         style = None
         if tour is not None:
             style = next((s for s in tour.styles if s.id == draft.tourStyleId), None)
@@ -313,10 +296,9 @@ class ChatService:
 
     def _rebook(self, pastBookingId: int | None, pastBookings: list[PastBooking], draft: BookingDraft,
                 confirmed: list[DraftField], warnings: list[AiWarning]):
-        """지난 예약의 투어, 인원, 스타일을 가져온다. 날짜는 새로 묻는다."""
         past = next((p for p in pastBookings if p.id == pastBookingId), None)
         if past is None and pastBookings:
-            past = pastBookings[0]  # 번호를 말하지 않으면 가장 최근 예약
+            past = max(pastBookings, key=lambda p: p.startAt.replace(tzinfo=None) if p.startAt else datetime.min)
         tour = self.catalog.findTour(tourId=past.tourId) if past and past.tourId else None
         if tour is None:
             warn(warnings, WarningCode.TOUR_NOT_FOUND, "다시 예약할 지난 여행을 찾지 못했어요.")
@@ -342,13 +324,11 @@ class ChatService:
         if intent == Intent.UNKNOWN:
             lines.append("여행 예약에 대해 말씀해 주시면 도와드릴게요.")
 
-        # 인원이나 투어가 바뀌었는데 최소 인원보다 적으면 안내
         if tour and draft.participantsCount and (DraftField.participantsCount in changed
                                                  or DraftField.tourId in changed):
             if draft.participantsCount < min_people(tour):
                 lines.append(MIN_PEOPLE_NOTICE.format(n=min_people(tour)))
 
-        # 금액 문의: 금액은 프론트가 백엔드에 물어 보여 준다. AI는 짧게 답하고, 빈 칸이 있으면 그것부터 묻는다
         if intent == Intent.CHECK_PRICE:
             empty = [field for field in PRICE_FIELDS if getattr(draft, field) is None]
             if not empty:
@@ -358,7 +338,7 @@ class ChatService:
             lines.append(self._askMissing(draft, tour, empty, wantsAddons))
             return lines
 
-        if not missing:  # 7개 모두 확인됨
+        if not missing: 
             if intent == Intent.SUBMIT_BOOKING:
                 lines.append("예약 페이지로 이동할게요. 내용을 확인하고 [예약하기]를 눌러 주세요.")
             else:

@@ -7,4 +7,3 @@ uvicorn[standard]==0.54.0
 python-multipart==0.0.32
 webrtcvad-wheels==2.0.14.post1
 imageio-ffmpeg==0.6.0
-pytest==9.1.1

@@ -6,7 +6,7 @@ from app.config import Settings
 from app.dto import AddonType, FoodType, HotelGrade, TourStyleType, TourTheme
 
 class CatalogUnavailableError(Exception):
-    '''백엔드에서 투어 정보 받기 실패'''
+    pass
 
 class TourStyle(BaseModel):
     id: int
@@ -76,16 +76,14 @@ class Tour(BaseModel):
         return datetime.combine(startDate + timedelta(days=self.days - 1), self.arrivalTime)
 
 
-
 class TourCatalog:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._tours: list[Tour] = []                 # 클래스도 속성 tours
-        self._fetchedAt: datetime | None = None      # 클래스도 속성 fetchedAt
-        self.backendStatus = "unknown"               # 클래스도 속성 backendStatus: unknown, ok, error
+        self._tours: list[Tour] = []
+        self._fetchedAt: datetime | None = None
+        self.backendStatus = "unknown"
 
     def getAllTours(self) -> list[Tour]:
-        """전체 투어. 받은 지 CATALOG_TTL_SEC가 지나지 않았으면 저장해 둔 것을 그대로 쓴다."""
         if self._tours and self._isFresh():
             return self._tours
         try:
@@ -134,6 +132,5 @@ class TourCatalog:
                 try:
                     tours.append(Tour.model_validate(detail.json()))
                 except ValidationError as error:
-                    # 일수나 출발, 도착 시각이 비어 있는 투어(기획 중)는 예약할 수 없으니 빼고 나머지는 쓴다
                     print(f"[TourCatalog] 투어 {item['id']}는 정보가 모자라 뺌: {error.error_count()}개 칸")
         return tours

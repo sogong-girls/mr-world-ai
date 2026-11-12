@@ -13,7 +13,6 @@ from app.speech_recognizer import SpeechRecognizer
 from app.tour_catalog import CatalogUnavailableError, TourCatalog
 
 VERSION = "1.0.0"
-
 settings = load_settings()
 catalog = TourCatalog(settings)
 chatService = ChatService(catalog, IntentParser(settings), SpeechRecognizer(settings))

@@ -1,8 +1,3 @@
-"""IntentParser: 고객 문장에서 의도와 예약 항목(뜻)을 뽑아 NLUResult로 돌려준다.
-
-parse(): OpenAI API에 묻는다 (모델은 .env의 OPENAI_MODEL). 키가 없거나 실패하면 _parseWithRules()로 넘어간다.
-_parseWithRules(): OpenAI를 쓸 수 없을 때 키워드, 날짜, 인원 표현 규칙으로 같은 NLUResult를 만든다.
-"""
 import re
 from datetime import date, datetime, timedelta
 from app.config import Settings
@@ -37,7 +32,7 @@ slots
 - hotelGrade: 3성=_3_STAR, 4성=_4_STAR, 5성=_5_STAR
 - foodType: 도시락=LUNCHBOX, 현지식=LOCAL_RESTAURANT, 스테이크/고급 식사=PREMIUM_RESTAURANT
 - startDate: 출발 날짜 YYYY-MM-DD. '오늘' 줄의 날짜와 요일을 기준으로 계산하고, 연도 없이 말한 날짜가 지났으면 내년. 요일로 말하면 달력에서 찾는다. 다음 주는 오늘이 있는 주(월~일)의 다음 주
-- addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다
+- addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다. 이미 넣은 것에 더하는 말('~에도', '추가')이면 replace=false, 이미 넣은 것을 다른 일차나 끼니로 옮기는 말('~로 바꿔줘', '~ 말고', '~ 대신')이면 replace=true로 하고 nthDays, meals에는 새로 넣을 것만 적는다
 - noAddons: 커피/샴페인을 넣지 않겠다고 함
 - useDefaults: '나머지는 기본으로'처럼 남은 항목을 기본값으로 하겠다고 함
 - answer: 직전 질문에 대한 대답이면 YES 또는 NO
@@ -78,13 +73,12 @@ FOOD_WORDS = {
 }
 ADDON_WORDS = {r"커피": AddonType.COFFEE, r"샴페인": AddonType.CHAMPAGNE}
 MEAL_WORDS = {r"아침|조식": Meal.BREAKFAST, r"점심|중식": Meal.LUNCH, r"저녁|석식": Meal.DINNER}
-WEEKDAYS = "월화수목금토일"  # date.weekday()는 월요일이 0
+WEEKDAYS = "월화수목금토일"
 KOREAN_NUMBERS = {"한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10}
 DAY_WORDS = {"첫": 1, "둘": 2, "셋": 3, "넷": 4, "다섯": 5, "여섯": 6, "일곱": 7}
 
 
 def find_value(table: dict, text: str):
-    """낱말표에서 text에 처음 보이는 값. 없으면 None."""
     for pattern, value in table.items():
         if re.search(pattern, text):
             return value
@@ -100,16 +94,12 @@ class IntentParser:
         self.settings = settings
         self._client = None
         if settings.openai_api_key:
-            # 재시도는 1번까지 (네트워크가 막혔을 때 한 요청이 오래 걸리지 않게)
-            self._client = OpenAI(api_key=settings.openai_api_key, timeout=10.0, max_retries=1)
+            self._client = OpenAI(api_key=settings.openai_api_key, timeout=6.0, max_retries=0)
 
     def parse(self, text: str, context: CommandContext, tours: list[Tour]) -> NLUResult:
-        """문장 → NLUResult. OpenAI를 쓸 수 없으면 규칙으로 처리한다."""
         if self._client is None:
             return self._parseWithRules(text, tours)
         try:
-            # 구조화 출력: response_format=NLUResult 모양 그대로 답을 받는다
-            # (responses.parse와 결과는 같고 1초쯤 빨라서 chat.completions를 쓴다, 2026-11-09 측정)
             response = self._client.chat.completions.parse(
                 model=self.settings.openai_model,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT},
@@ -126,7 +116,6 @@ class IntentParser:
         return self._parseWithRules(text, tours)
 
     def _buildInput(self, text: str, context: CommandContext, tours: list[Tour]) -> str:
-        """OpenAI에 보낼 글: 오늘 날짜와 달력, 투어 목록, 지금까지 채운 예약, 지난 예약, 최근 대화, 고객 말."""
         today = today_kst()
         days = [today + timedelta(days=n) for n in range(21)]
         calendar = " ".join(f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})" for d in days)
@@ -169,17 +158,17 @@ class IntentParser:
         return NLUResult(intent=intent, confidence=confidence, slots=slots)
 
     def _intent(self, text: str, slots: Slots) -> Intent:
+        if re.search(r"(지난번|저번|전에).*(똑같이|그대로|다시)", text):
+            return Intent.REBOOK
         if re.search(r"예약\s*(할게|해\s*줘|해\s*주세요|하겠|진행)", text):
             return Intent.SUBMIT_BOOKING
         if re.search(r"얼마|가격|금액|비용", text):
             return Intent.CHECK_PRICE
-        if re.search(r"(지난번|저번|전에).*(똑같이|그대로|다시)", text):
-            return Intent.REBOOK
         if re.search(r"(지난|이전|예전)\s*(여행|예약)", text):
             return Intent.VIEW_HISTORY
         if re.search(r"(어떤|무슨)\s*투어|투어\s*(종류|목록|뭐)", text):
             return Intent.SEARCH_TOUR
-        if slots.model_dump(exclude_defaults=True):  # 무엇이든 하나라도 말했으면
+        if slots.model_dump(exclude_defaults=True):
             return Intent.EDIT_BOOKING
         return Intent.UNKNOWN
 
@@ -213,7 +202,7 @@ class IntentParser:
         match = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
         if match:
             found = self._safeDate(today.year, int(match.group(1)), int(match.group(2)))
-            if found and found < today:  # 연도를 말하지 않았는데 지난 날짜면 내년
+            if found and found < today:
                 found = self._safeDate(today.year + 1, found.month, found.day)
             return found
         return None
@@ -221,7 +210,7 @@ class IntentParser:
     def _safeDate(self, year: int, month: int, day: int) -> date | None:
         try:
             return date(year, month, day)
-        except ValueError:  # 2월 30일 같은 없는 날짜
+        except ValueError:
             return None
 
     def _addons(self, text: str) -> list[AddonSlot]:
@@ -233,11 +222,13 @@ class IntentParser:
             if re.search(word + r"(날|째\s*날)", text):
                 days.append(number)
         meals = [meal for pattern, meal in MEAL_WORDS.items() if re.search(pattern, text)]
-        return [AddonSlot(addonType=addonType, nthDays=sorted(set(days)), allDays="매일" in text, meals=meals)]
+        return [AddonSlot(addonType=addonType, nthDays=sorted(set(days)), allDays="매일" in text, meals=meals,
+                          replace=bool(re.search(r"바꿔|변경|옮겨", text)))]
 
     def _answer(self, text: str) -> str | None:
         stripped = text.strip()
-        if re.match(r"(네|예|응|좋아|그래|맞아)요?(?=\s|[.!,~]|$)(?!\s*(명|분|사람))", stripped):
+        if re.match(r"(네|예|넵|넹|응|좋아|좋습니다|그래|맞아|그걸로|그렇게)+요?(?=\s|[.!,~]|$)(?!\s*(명|분|사람))",
+                    stripped):
             return "YES"
         if re.match(r"(아니|아뇨|싫어)", stripped):
             return "NO"
