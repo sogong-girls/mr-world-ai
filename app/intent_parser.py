@@ -1,8 +1,3 @@
-"""IntentParser: 고객 문장에서 의도와 예약 항목(뜻)을 뽑아 NLUResult로 돌려준다.
-
-parse(): OpenAI API에 묻는다 (모델은 .env의 OPENAI_MODEL). 키가 없거나 실패하면 _parseWithRules()로 넘어간다.
-_parseWithRules(): OpenAI를 쓸 수 없을 때 키워드, 날짜, 인원 표현 규칙으로 같은 NLUResult를 만든다.
-"""
 import re
 from datetime import date, datetime, timedelta
 from app.config import Settings
@@ -78,13 +73,12 @@ FOOD_WORDS = {
 }
 ADDON_WORDS = {r"커피": AddonType.COFFEE, r"샴페인": AddonType.CHAMPAGNE}
 MEAL_WORDS = {r"아침|조식": Meal.BREAKFAST, r"점심|중식": Meal.LUNCH, r"저녁|석식": Meal.DINNER}
-WEEKDAYS = "월화수목금토일"  # date.weekday()는 월요일이 0
+WEEKDAYS = "월화수목금토일"
 KOREAN_NUMBERS = {"한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10}
 DAY_WORDS = {"첫": 1, "둘": 2, "셋": 3, "넷": 4, "다섯": 5, "여섯": 6, "일곱": 7}
 
 
 def find_value(table: dict, text: str):
-    """낱말표에서 text에 처음 보이는 값. 없으면 None."""
     for pattern, value in table.items():
         if re.search(pattern, text):
             return value
@@ -100,16 +94,12 @@ class IntentParser:
         self.settings = settings
         self._client = None
         if settings.openai_api_key:
-            # 재시도는 1번까지 (네트워크가 막혔을 때 한 요청이 오래 걸리지 않게)
             self._client = OpenAI(api_key=settings.openai_api_key, timeout=10.0, max_retries=1)
 
     def parse(self, text: str, context: CommandContext, tours: list[Tour]) -> NLUResult:
-        """문장 → NLUResult. OpenAI를 쓸 수 없으면 규칙으로 처리한다."""
         if self._client is None:
             return self._parseWithRules(text, tours)
         try:
-            # 구조화 출력: response_format=NLUResult 모양 그대로 답을 받는다
-            # (responses.parse와 결과는 같고 1초쯤 빨라서 chat.completions를 쓴다, 2026-11-09 측정)
             response = self._client.chat.completions.parse(
                 model=self.settings.openai_model,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT},
@@ -126,7 +116,6 @@ class IntentParser:
         return self._parseWithRules(text, tours)
 
     def _buildInput(self, text: str, context: CommandContext, tours: list[Tour]) -> str:
-        """OpenAI에 보낼 글: 오늘 날짜와 달력, 투어 목록, 지금까지 채운 예약, 지난 예약, 최근 대화, 고객 말."""
         today = today_kst()
         days = [today + timedelta(days=n) for n in range(21)]
         calendar = " ".join(f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})" for d in days)
@@ -179,7 +168,7 @@ class IntentParser:
             return Intent.VIEW_HISTORY
         if re.search(r"(어떤|무슨)\s*투어|투어\s*(종류|목록|뭐)", text):
             return Intent.SEARCH_TOUR
-        if slots.model_dump(exclude_defaults=True):  # 무엇이든 하나라도 말했으면
+        if slots.model_dump(exclude_defaults=True):
             return Intent.EDIT_BOOKING
         return Intent.UNKNOWN
 
@@ -213,7 +202,7 @@ class IntentParser:
         match = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
         if match:
             found = self._safeDate(today.year, int(match.group(1)), int(match.group(2)))
-            if found and found < today:  # 연도를 말하지 않았는데 지난 날짜면 내년
+            if found and found < today:
                 found = self._safeDate(today.year + 1, found.month, found.day)
             return found
         return None
@@ -221,7 +210,7 @@ class IntentParser:
     def _safeDate(self, year: int, month: int, day: int) -> date | None:
         try:
             return date(year, month, day)
-        except ValueError:  # 2월 30일 같은 없는 날짜
+        except ValueError:
             return None
 
     def _addons(self, text: str) -> list[AddonSlot]:

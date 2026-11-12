@@ -5,7 +5,6 @@ from typing import Literal
 
 KST = timezone(timedelta(hours=9))
 
-# ---enum---
 
 class TourTheme(StrEnum):
     HONEYMOON = "HONEYMOON"
@@ -43,9 +42,6 @@ class Meal(StrEnum):
     DINNER = "DINNER"
 
 
-# ---BookingDraft---
-
-
 class BookingAddon(BaseModel):
     addonOptionId: int
     nthDay: int = Field(ge=1)
@@ -64,13 +60,9 @@ class BookingDraft(BaseModel):
     @field_validator("startAt", "endAt")
     @classmethod
     def _toKoreanLocalTime(cls, value):
-        """시간대가 붙어 오면(+09:00, Z) 한국 시간으로 바꾸고 시간대를 뗀다."""
         if value is not None and value.tzinfo is not None:
             value = value.astimezone(KST).replace(tzinfo=None)
         return value
-
-
-# ---Enum for Chat---
 
 
 class Intent(StrEnum):
@@ -103,9 +95,6 @@ class WarningCode(StrEnum):
     TRANSPORT_NOT_CHANGEABLE = "TRANSPORT_NOT_CHANGEABLE"
 
 
-# ---Command Context(Frontend->AI)---
-
-
 class PastBooking(BaseModel):
     id: int
     tourId: int | None = None
@@ -127,9 +116,6 @@ class TextCommandRequest(BaseModel):
     context: CommandContext | None = None
 
 
-# ---Command Response(AI->Frontend)---
-
-
 class AiWarning(BaseModel):
     code: WarningCode
     message: str
@@ -140,13 +126,10 @@ class CommandResponse(BaseModel):
     intent: Intent
     draft: BookingDraft
     changedFields: list[DraftField] = Field(default_factory=list)
-    confirmedFields: list[DraftField] = Field(default_factory=list)  # 다음 요청 context에 그대로 보내면 된다
+    confirmedFields: list[DraftField] = Field(default_factory=list)
     missingFields: list[DraftField] = Field(default_factory=list)
     reply: str
     warnings: list[AiWarning] = Field(default_factory=list)
-
-
-# ---NLUResult---
 
 
 class AddonSlot(BaseModel):
