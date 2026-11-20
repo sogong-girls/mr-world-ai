@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, time
 
 from app.dto import (AddonSlot, AddonType, AiWarning, BookingAddon, BookingDraft, CommandContext,
@@ -16,8 +17,10 @@ TOUR_OPTIONS = [DraftField.tourStyleId, DraftField.hotelOptionId, DraftField.foo
 PRICE_FIELDS = [DraftField.tourId, DraftField.participantsCount, DraftField.tourStyleId,
                 DraftField.hotelOptionId, DraftField.foodOptionId] 
 
+THEME_NAMES = {TourTheme.HONEYMOON: "허니문", TourTheme.PARENT: "효도", TourTheme.GOLF: "골프",
+               TourTheme.TREKKING: "트레킹"}
 STYLE_NAMES = {TourStyleType.CLASSIC: "클래식", TourStyleType.GRAND: "그랜드", TourStyleType.PREMIUM: "프리미엄"}
-HOTEL_NAMES = {HotelGrade.STAR_3: "3성급 호텔", HotelGrade.STAR_4: "4성급 호텔", HotelGrade.STAR_5: "5성급 호텔"}
+HOTEL_NAMES = {HotelGrade.STAR_3: "3성급 숙소", HotelGrade.STAR_4: "4성급 숙소", HotelGrade.STAR_5: "5성급 숙소"}
 FOOD_NAMES = {FoodType.LUNCHBOX: "도시락", FoodType.LOCAL_RESTAURANT: "현지식",
               FoodType.PREMIUM_RESTAURANT: "스테이크"}
 ADDON_NAMES = {AddonType.COFFEE: "커피", AddonType.CHAMPAGNE: "샴페인"}
@@ -39,6 +42,19 @@ def unconfirm(confirmed: list[DraftField], field: DraftField):
 
 def warn(warnings: list[AiWarning], code: WarningCode, message: str):
     warnings.append(AiWarning(code=code, message=message))
+
+
+def has_batchim(word: str) -> bool:
+    code = ord(word[-1]) - 0xAC00
+    return 0 <= code < 11172 and code % 28 != 0
+
+
+def eun(word: str) -> str:
+    return word + ("은" if has_batchim(word) else "는")
+
+
+def iga(word: str) -> str:
+    return word + ("이" if has_batchim(word) else "가")
 
 
 def ro(word: str) -> str:
@@ -97,7 +113,15 @@ class ChatService:
         wantsAddons = nluResult.slots.answer == "YES" and DraftField.bookingAddons in askedBefore
         tour = self.catalog.findTour(tourId=draft.tourId) if draft.tourId else None
         lines = [warning.message for warning in warnings]
-        lines += self._composeReply(intent, draft, tour, changed, missing, wantsAddons, context.pastBookings)
+        askedStyles = []  # 투어를 고른 뒤 스타일에 무엇이 들어 있는지 물으면 그 스타일 설명
+        if intent == Intent.SEARCH_TOUR and tour is not None:
+            if nluResult.slots.tourStyle:
+                askedStyles = [nluResult.slots.tourStyle]
+            elif re.search(r"스타일|등급", text):
+                askedStyles = list(TourStyleType)
+        tourChoices = self._tourChoices(nluResult, tour)
+        lines += self._composeReply(intent, draft, tour, changed, missing, wantsAddons, context.pastBookings,
+                                    askedStyles, tourChoices)
         return CommandResponse(
             transcript=text,
             intent=intent,
@@ -130,12 +154,8 @@ class ChatService:
         if nluResult.intent == Intent.REBOOK or slots.pastBookingId is not None:
             self._rebook(slots.pastBookingId, pastBookings, draft, confirmed, warnings)
         if slots.tourName or slots.tourTheme:
-            tour = self.catalog.findTour(name=slots.tourName, theme=slots.tourTheme)
-            if tour is None:
-                warn(warnings, WarningCode.TOUR_NOT_FOUND, "말씀하신 투어를 찾지 못했어요.")
-            else:
-                self._setTour(tour, draft, confirmed)
-        tour = self.catalog.findTour(tourId=draft.tourId) if draft.tourId else None
+            self._chooseTour(nluResult, draft, confirmed, warnings)
+        tour =self.catalog.findTour(tourId=draft.tourId) if draft.tourId else None
 
         if slots.participantsCount is not None:
             if slots.participantsCount < 1:
@@ -144,7 +164,9 @@ class ChatService:
                 draft.participantsCount = slots.participantsCount
                 confirm(confirmed, DraftField.participantsCount)
 
-        if tour is None:
+        if nluResult.intent == Intent.SEARCH_TOUR:
+            pass  # 물어본 스타일, 호텔, 식사는 고른 것이 아니다
+        elif tour is None:
             if slots.tourStyle or slots.hotelGrade or slots.foodType or slots.addons:
                 warn(warnings, WarningCode.TOUR_NOT_SELECTED, "먼저 어떤 투어로 갈지 정해 주세요.")
         else:
@@ -225,6 +247,52 @@ class ChatService:
         draft.bookingAddons = []
         for field in TOUR_OPTIONS:
             unconfirm(confirmed, field)
+
+    def _chooseTour(self, nluResult: NLUResult, draft: BookingDraft, confirmed: list[DraftField],
+                    warnings: list[AiWarning]):
+        """말한 투어 이름(여행지로 정해진 이름 포함)이나 테마로 투어를 정한다.
+
+        테마만 말했을 때: 지금 고른 투어가 그 테마면 그대로 두고, 그 테마의 투어가 여럿이면 정하지 않는다
+        (어느 투어인지는 답 문장에서 되묻는다). 다른 테마로 바꾸려는 것이면 지금 투어와 옵션을 비운다.
+        """
+        slots = nluResult.slots
+        if slots.tourName:
+            tour = self.catalog.findTour(name=slots.tourName)
+            if tour is not None:
+                self._setTour(tour, draft, confirmed)
+                return
+        if slots.tourTheme is None:
+            warn(warnings, WarningCode.TOUR_NOT_FOUND, "말씀하신 투어를 찾지 못했어요.")
+            return
+        current = self.catalog.findTour(tourId=draft.tourId) if draft.tourId else None
+        if current is not None and current.tourTheme == slots.tourTheme:
+            return
+        tours = self.catalog.findTours(slots.tourTheme)
+        if not tours:
+            warn(warnings, WarningCode.TOUR_NOT_FOUND, "말씀하신 투어를 찾지 못했어요.")
+        elif len(tours) == 1:
+            self._setTour(tours[0], draft, confirmed)
+        elif current is not None and nluResult.intent != Intent.SEARCH_TOUR:
+            draft.tourId = None
+            unconfirm(confirmed, DraftField.tourId)
+            self._clearTourOptions(draft, confirmed)
+
+    def _tourChoices(self, nluResult: NLUResult, tour: Tour | None) -> list[Tour]:
+        """답에서 보여 줄 투어 후보.
+
+        투어 질문(SEARCH_TOUR): 말한 투어, 또는 말한 테마의 투어 전부 (없으면 빈 목록 → 전체 목록).
+        그 밖: 테마만 말해 투어가 정해지지 않았고 그 테마 투어가 여럿이면 그 투어들 (어느 것인지 되묻는다).
+        """
+        slots = nluResult.slots
+        if nluResult.intent == Intent.SEARCH_TOUR:
+            if slots.tourName and tour is not None:
+                return [tour]
+            return self.catalog.findTours(slots.tourTheme) if slots.tourTheme else []
+        if slots.tourTheme and (tour is None or tour.tourTheme != slots.tourTheme):
+            tours = self.catalog.findTours(slots.tourTheme)
+            if len(tours) > 1:
+                return tours
+        return []
 
     def _setTour(self, tour: Tour, draft: BookingDraft, confirmed: list[DraftField]):
         if tour.id != draft.tourId:
@@ -313,12 +381,18 @@ class ChatService:
     # ----- 답 문장 -----
 
     def _composeReply(self, intent: Intent, draft: BookingDraft, tour: Tour | None, changed: list[DraftField],
-                      missing: list[DraftField], wantsAddons: bool, pastBookings: list[PastBooking]) -> list[str]:
+                      missing: list[DraftField], wantsAddons: bool, pastBookings: list[PastBooking],
+                      askedStyles: list[TourStyleType] | None = None,
+                      tourChoices: list[Tour] | None = None) -> list[str]:
         """의도에 맞는 답 + 최소 인원 안내 + 다음 질문을 문장 목록으로 만든다."""
         lines = []
-        if intent == Intent.SEARCH_TOUR:
-            names = ", ".join(f"{t.name}({t.days}일)" for t in self.catalog.getAllTours())
-            return lines + [f"예약할 수 있는 투어는 {names}예요. 어떤 투어가 마음에 드세요?"]
+        tourChoices = tourChoices or []
+        if askedStyles and tour is not None:
+            lines.append(self._styleInfo(tour, askedStyles))
+        elif intent == Intent.SEARCH_TOUR:
+            if tourChoices:
+                return lines + [f"{self._choiceList(tourChoices)} 있어요. 어떤 투어가 마음에 드세요?"]
+            return lines + [f"예약할 수 있는 투어는 {self._catalogByTheme()}. 어떤 여행이 마음에 드세요?"]
         if intent == Intent.VIEW_HISTORY:
             return lines + [self._history(pastBookings)]
         if intent == Intent.UNKNOWN:
@@ -335,7 +409,7 @@ class ChatService:
                 lines.append("선택하신 조건으로 금액을 보여 드릴게요.")
                 return lines
             lines.append("금액을 알려 드리려면 먼저 정할 게 있어요.")
-            lines.append(self._askMissing(draft, tour, empty, wantsAddons))
+            lines.append(self._askMissing(draft, tour, empty, wantsAddons, tourChoices))
             return lines
 
         if not missing: 
@@ -346,32 +420,40 @@ class ChatService:
             return lines
         if intent == Intent.SUBMIT_BOOKING:
             lines.append("예약하려면 아직 정할 게 있어요.")
-        lines.append(self._askMissing(draft, tour, missing, wantsAddons))
+        lines.append(self._askMissing(draft, tour, missing, wantsAddons, tourChoices))
         return lines
 
     def _askMissing(self, draft: BookingDraft, tour: Tour | None, missing: list[DraftField],
-                    wantsAddons: bool) -> str:
-        """next_questions로 고른 항목(최대 2개)을 묻는다. 호텔, 식사는 스타일 기본값을 추천한다."""
+                    wantsAddons: bool, tourChoices: list[Tour] | None = None) -> str:
+        """next_questions로 고른 항목(최대 2개)을 묻는다. 호텔, 식사는 스타일 기본값을 추천한다.
+
+        투어는 테마부터 묻고(투어 이름 8개를 다 읽어 주면 길다), tourChoices가 있으면(테마의 투어가 여럿)
+        그 후보 중에서 묻는다. 스타일은 투어마다 고를 수 있는 것이 달라 투어를 정한 뒤 묻는다.
+        """
         asked = next_questions(missing)
+        if DraftField.tourId in asked:
+            asked = [field for field in asked if field != DraftField.tourStyleId]
         hotel = self._hotelName(draft, tour)
         food = self._foodName(draft, tour)
         if asked == [DraftField.hotelOptionId, DraftField.foodOptionId] and hotel and food:
-            return f"호텔은 {hotel}, 식사는 {ro(food)} 추천해요. 이대로 할까요?"
+            return f"숙소는 {hotel}, 식사는 {ro(food)} 추천해요. 이대로 할까요?"
 
         questions = []
         for field in asked:
-            if field == DraftField.tourId:
-                names = ", ".join(t.name for t in self.catalog.getAllTours())
-                questions.append(f"어떤 투어로 가실까요? ({names})")
+            if field == DraftField.tourId and tourChoices:
+                questions.append(f"{self._choiceList(tourChoices)} 있어요. 어느 투어로 가실까요?")
+            elif field == DraftField.tourId:
+                themes = dict.fromkeys(t.tourTheme for t in self.catalog.getAllTours())
+                questions.append(f"어떤 여행을 원하세요? ({', '.join(THEME_NAMES[t] for t in themes)})")
             elif field == DraftField.participantsCount:
                 questions.append("몇 분이 가세요?")
             elif field == DraftField.tourStyleId:
                 questions.append(f"스타일은 {self._styleChoices(tour)} 중에서 골라 주세요.")
             elif field == DraftField.hotelOptionId:
                 if hotel:
-                    questions.append(f"호텔은 {ro(hotel)} 할까요?")
+                    questions.append(f"숙소는 {ro(hotel)} 할까요?")
                 else:
-                    questions.append("호텔은 3성급, 4성급, 5성급 중 어디로 할까요?")
+                    questions.append("숙소는 3성급, 4성급, 5성급 중 어디로 할까요?")
             elif field == DraftField.foodOptionId:
                 if food:
                     questions.append(f"식사는 {ro(food)} 할까요?")
@@ -387,6 +469,44 @@ class ChatService:
                 questions.append("출발 날짜는 언제로 할까요?")
         return " ".join(questions)
 
+    def _tourLabel(self, tour: Tour) -> str:
+        """예: 허니문 하와이 선셋 투어(하와이, 6일)"""
+        info = ", ".join(part for part in [tour.destination, f"{tour.days}일"] if part)
+        return f"{tour.name}({info})"
+
+    def _choiceList(self, tours: list[Tour]) -> str:
+        """예: 허니문 투어는 허니문 낭만 투어(유럽, 7일), 허니문 하와이 선셋 투어(하와이, 6일)가 ('있어요' 앞까지)"""
+        labels = ", ".join(self._tourLabel(t) for t in tours)
+        head = f"{THEME_NAMES[tours[0].tourTheme]} 투어는 " if len({t.tourTheme for t in tours}) == 1 else ""
+        josa = iga(tours[-1].name)[-1]  # 괄호 뒤 조사는 괄호 앞 투어 이름에 맞춘다
+        return head + labels + josa
+
+    def _catalogByTheme(self) -> str:
+        """예: 허니문(유럽 7일, 하와이 6일), 효도(일본 온천 지역 4일, 경주·부산 3일)…이에요 (이름 대신 여행지로 짧게)"""
+        groups: dict[TourTheme, list[Tour]] = {}
+        for tour in self.catalog.getAllTours():
+            groups.setdefault(tour.tourTheme, []).append(tour)
+        parts = [f"{THEME_NAMES[theme]}({', '.join(f'{t.destination or t.name} {t.days}일' for t in tours)})"
+                 for theme, tours in groups.items()]
+        if not parts:
+            return "지금 없어요"
+        return ", ".join(parts) + "이에요"  # 늘 'N일)'로 끝남
+
+    def _styleInfo(self, tour: Tour, styleTypes: list[TourStyleType]) -> str:
+        """예: 효도 힐링 투어의 프리미엄은 5성급 숙소에 스테이크 식사예요. (비교라서 이름 대신 등급, 종류로 짧게)"""
+        styles = [s for s in tour.styles if s.type in styleTypes
+                  and not (tour.tourTheme in GRAND_ONLY and s.type == TourStyleType.CLASSIC)]
+        if not styles:
+            return f"{tour.name}에는 그 스타일이 없어요."
+        parts = []
+        for style in styles:
+            hotel = next((h for h in tour.hotelOptions if h.id == style.hotelOptionId), None)
+            food = next((f for f in tour.foodOptions if f.id == style.foodOptionId), None)
+            what = " ".join(filter(None, [f"{HOTEL_NAMES[hotel.grade]}에" if hotel else "",
+                                          FOOD_NAMES[food.type] if food else ""]))
+            parts.append(f"{eun(STYLE_NAMES[style.type])} {what}".strip())
+        return f"{tour.name}의 " + ", ".join(parts) + " 식사예요."
+
     def _styleChoices(self, tour: Tour | None) -> str:
         if tour is None:
             return "클래식, 그랜드, 프리미엄"
@@ -399,16 +519,20 @@ class ChatService:
         if tour is None or draft.hotelOptionId is None:
             return None
         hotel = next((h for h in tour.hotelOptions if h.id == draft.hotelOptionId), None)
-        return HOTEL_NAMES[hotel.grade] if hotel else None
+        if hotel is None:
+            return None
+        return hotel.name or HOTEL_NAMES[hotel.grade]  # 예: 4성급 온천 료칸 (이름이 없으면 4성급 숙소)
 
     def _foodName(self, draft: BookingDraft, tour: Tour | None) -> str | None:
         if tour is None or draft.foodOptionId is None:
             return None
         food = next((f for f in tour.foodOptions if f.id == draft.foodOptionId), None)
-        return FOOD_NAMES[food.type] if food else None
+        if food is None:
+            return None
+        return food.name or FOOD_NAMES[food.type]  # 예: 가이세키 정식 (이름이 없으면 현지식)
 
     def _summary(self, draft: BookingDraft, tour: Tour) -> str:
-        """예: 효도 힐링 투어, 4명, 프리미엄, 5성급 호텔, 스테이크, 12월 3일 출발, 샴페인 1번"""
+        """예: 효도 힐링 투어, 4명, 프리미엄, 5성급 프리미엄 료칸, 스테이크 전문 고급 레스토랑, 12월 3일 출발, 샴페인 1번"""
         style = next((s for s in tour.styles if s.id == draft.tourStyleId), None)
         parts = [tour.name, f"{draft.participantsCount}명", STYLE_NAMES[style.type] if style else "",
                  self._hotelName(draft, tour) or "", self._foodName(draft, tour) or "",

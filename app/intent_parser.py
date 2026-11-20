@@ -14,23 +14,25 @@ SYSTEM_PROMPT = """너는 여행 예약 도우미의 문장 해석기야. 고객
 - '지금까지 채운 예약'과 '최근 고객 말'은 뜻을 이해하는 데만 쓰고, 거기 있는 값을 다시 적지 않는다.
 - 투어 목록의 스타일을 보고 고객이 말하지 않은 스타일을 고르지 않는다.
 - id를 지어내지 않는다. pastBookingId만 '지난 예약' 목록에 있는 id를 쓴다.
+- '지금까지 채운 예약'의 tourId는 투어 목록 줄 맨 앞의 id다. 고른 투어의 일수는 그 줄에서 본다.
+- 한 테마에 투어가 여럿일 수 있다. 투어는 이름이나 여행지로 구분한다.
 
 intent
 - EDIT_BOOKING: 투어, 인원, 스타일, 호텔, 식사, 커피/샴페인, 출발일을 말하거나 질문에 예/아니요로 답함 ('네', '아니요' 한마디도 EDIT_BOOKING)
 - SUBMIT_BOOKING: 이대로 예약하겠다고 함
 - REBOOK: 지난 여행과 똑같이(다시) 예약하고 싶다고 함
 - CHECK_PRICE: 금액, 가격을 물음
-- SEARCH_TOUR: 어떤 투어가 있는지 물음
+- SEARCH_TOUR: 어떤 투어가 있는지, 또는 스타일에 무엇이 들어 있는지(호텔, 식사) 물음. 물어본 스타일은 tourStyle에 적고, 함께 말한 인원 같은 항목도 slots에 적는다
 - VIEW_HISTORY: 지난 여행 기록을 보고 싶다고 함
 - UNKNOWN: 예약과 관계없는 말, 이미 한 예약의 취소나 변경 요청
 
 slots
 - tourTheme: 허니문/신혼=HONEYMOON, 효도/부모님=PARENT, 골프=GOLF, 트레킹/등산=TREKKING
-- tourName: 투어 목록의 이름을 말했으면 목록에 적힌 이름 그대로
+- tourName: 투어 이름이나 여행지를 말해서 투어가 하나로 정해지면 목록에 적힌 그 투어 이름 그대로 (함께 말한 테마로 좁혀도 된다). 테마만 말했거나 여러 투어에 해당하면 null
 - participantsCount: 가는 사람 수 (예: 부모님과 나 = 3)
 - tourStyle: 클래식=CLASSIC, 그랜드=GRAND, 프리미엄=PREMIUM. '프리미엄' 한마디는 스타일이다 (뒤에 식사, 레스토랑이 붙을 때만 식사)
 - hotelGrade: 3성=_3_STAR, 4성=_4_STAR, 5성=_5_STAR
-- foodType: 도시락=LUNCHBOX, 현지식=LOCAL_RESTAURANT, 스테이크/고급 식사=PREMIUM_RESTAURANT
+- foodType: 도시락=LUNCHBOX, 현지식/현지 음식/한정식/향토 정식/가이세키/산채 정식처럼 그 지역 음식=LOCAL_RESTAURANT, 스테이크/고급 식사/고급 레스토랑=PREMIUM_RESTAURANT
 - startDate: 출발 날짜 YYYY-MM-DD. '오늘' 줄의 날짜와 요일을 기준으로 계산하고, 연도 없이 말한 날짜가 지났으면 내년. 요일로 말하면 달력에서 찾는다. 다음 주는 오늘이 있는 주(월~일)의 다음 주
 - addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다. 이미 넣은 것에 더하는 말('~에도', '추가')이면 replace=false, 이미 넣은 것을 다른 일차나 끼니로 옮기는 말('~로 바꿔줘', '~ 말고', '~ 대신')이면 replace=true로 하고 nthDays, meals에는 새로 넣을 것만 적는다
 - noAddons: 커피/샴페인을 넣지 않겠다고 함
@@ -40,13 +42,15 @@ slots
 - pastBookingId: 지난 예약 중 하나를 골라 다시 가고 싶다고 하면 그 예약의 id
 - confidence: 해석이 확실하면 0.9 이상, 애매하면 0.5 이하
 
-예시 (지금까지 채운 예약에 효도 투어, 4명이 있을 때)
+예시 (지금까지 채운 예약에 4일짜리 효도 투어, 4명이 있을 때)
 - 고객 말 "프리미엄" -> tourStyle=PREMIUM 하나만. 테마, 인원은 다시 적지 않음
 - 고객 말 "프리미엄 식사로" -> foodType=PREMIUM_RESTAURANT 하나만. tourStyle은 null
-- 고객 말 "마지막 날 저녁에 샴페인" -> 효도 투어가 4일이므로 addons=[CHAMPAGNE, nthDays [4], meals [DINNER]] 하나만
+- 고객 말 "두 명이고 프리미엄 스타일은 뭐가 있어?" -> intent=SEARCH_TOUR, participantsCount=2, tourStyle=PREMIUM
+- 고객 말 "마지막 날 저녁에 샴페인" -> 그 투어가 4일이므로 addons=[CHAMPAGNE, nthDays [4], meals [DINNER]] 하나만
 예시 (아무것도 정하지 않았을 때)
 - 고객 말 "마지막 날 저녁에 샴페인" -> addons=[CHAMPAGNE, nthDays [], meals [DINNER]]
-- 고객 말 "효도 여행 5명" -> tourTheme=PARENT, participantsCount=5. tourStyle은 null
+- 고객 말 "효도 여행 5명" -> tourTheme=PARENT, participantsCount=5. tourName, tourStyle은 null
+- 고객 말 "하와이로 신혼여행 갈래요" -> tourTheme=HONEYMOON, tourName=여행지가 하와이인 투어의 이름
 """
 
 
@@ -68,8 +72,8 @@ HOTEL_WORDS = {
 }
 FOOD_WORDS = {
     r"도시락": FoodType.LUNCHBOX,
-    r"현지식": FoodType.LOCAL_RESTAURANT,
-    r"스테이크|고급\s*식사|프리미엄\s*(식사|레스토랑)": FoodType.PREMIUM_RESTAURANT,
+    r"현지식|현지\s*(음식|식당|레스토랑)|한정식|향토|가이세키|산채": FoodType.LOCAL_RESTAURANT,
+    r"스테이크|고급\s*(식사|레스토랑)|프리미엄\s*(식사|레스토랑)": FoodType.PREMIUM_RESTAURANT,
 }
 ADDON_WORDS = {r"커피": AddonType.COFFEE, r"샴페인": AddonType.CHAMPAGNE}
 MEAL_WORDS = {r"아침|조식": Meal.BREAKFAST, r"점심|중식": Meal.LUNCH, r"저녁|석식": Meal.DINNER}
@@ -124,7 +128,8 @@ class IntentParser:
                  "", "[참고만 하고 slots에 다시 적지 말 것]", "투어 목록:"]
         for tour in tours:
             styles = ", ".join(style.type for style in tour.styles)
-            lines.append(f"- {tour.name} (테마 {tour.tourTheme}, {tour.days}일, 스타일 {styles})")
+            lines.append(f"- id {tour.id}: {tour.name} (테마 {tour.tourTheme}, 여행지 {tour.destination or '-'}, "
+                         f"{tour.days}일, 스타일 {styles})")
         draft = context.draft or BookingDraft()
         lines.append("지금까지 채운 예약: " + draft.model_dump_json(exclude_defaults=True))
         names = {tour.id: tour.name for tour in tours}
@@ -166,7 +171,8 @@ class IntentParser:
             return Intent.CHECK_PRICE
         if re.search(r"(지난|이전|예전)\s*(여행|예약)", text):
             return Intent.VIEW_HISTORY
-        if re.search(r"(어떤|무슨)\s*투어|투어\s*(종류|목록|뭐)", text):
+        if re.search(r"(어떤|무슨)\s*투어|투어\s*(종류|목록|뭐)", text) or re.search(
+                r"(스타일|등급|클래식|그랜드|프리미엄).{0,10}(뭐가|무엇|뭐\s*있|어떤|알려|차이)", text):
             return Intent.SEARCH_TOUR
         if slots.model_dump(exclude_defaults=True):
             return Intent.EDIT_BOOKING
@@ -177,7 +183,10 @@ class IntentParser:
         for tour in tours:
             if tour.name.replace(" ", "") in compact:
                 return tour.name
-        return None
+        # 여행지로 고르기 ('하와이', '다낭 골프'): 함께 말한 테마로 좁혀 투어가 하나일 때만
+        theme = find_value(THEME_WORDS, text)
+        found = [tour for tour in tours if tour.mentions_place(text) and (theme is None or tour.tourTheme == theme)]
+        return found[0].name if len(found) == 1 else None
 
     def _people(self, text: str) -> int | None:
         if re.search(r"혼자", text):

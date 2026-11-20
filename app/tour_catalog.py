@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime, time, timedelta
 import httpx
 from pydantic import BaseModel, Field, ValidationError
@@ -7,6 +8,9 @@ from app.dto import AddonType, FoodType, HotelGrade, TourStyleType, TourTheme
 
 class CatalogUnavailableError(Exception):
     pass
+
+
+PLACE_SKIP = {"지역", "인근"}  # 여행지에 붙어 있지만 장소를 가리키지 않는 말
 
 class TourStyle(BaseModel):
     id: int
@@ -69,6 +73,21 @@ class Tour(BaseModel):
                 return addon
         return None
 
+    def place_words(self) -> list[str]:
+        """여행지에서 고객이 말할 만한 낱말 (예: '경주·부산' → 경주, 부산 / '제주도' → 제주도, 제주)."""
+        words = []
+        for word in re.split(r"[\s·,/]+", self.destination):
+            if len(word) < 2 or word in PLACE_SKIP:
+                continue
+            words.append(word)
+            if len(word) >= 3 and word.endswith("도"):
+                words.append(word[:-1])
+        return words
+
+    def mentions_place(self, text: str) -> bool:
+        compact = text.replace(" ", "")
+        return any(word in compact for word in self.place_words())
+
     def start_at(self, startDate: date) -> datetime:
         return datetime.combine(startDate, self.departureTime)
 
@@ -108,13 +127,21 @@ class TourCatalog:
         if name:
             wanted = name.replace(" ", "")
             for tour in tours:
-                if wanted in tour.name.replace(" ", ""):
+                if wanted == tour.name.replace(" ", ""):
                     return tour
+            # 이름 일부만 말했으면 투어 하나에만 들어맞을 때 그 투어 ('허니문'처럼 여럿에 맞으면 못 찾음)
+            partial = [tour for tour in tours if wanted in tour.name.replace(" ", "")]
+            if len(partial) == 1:
+                return partial[0]
         if theme is not None:
             for tour in tours:
                 if tour.tourTheme == theme:
                     return tour
         return None
+
+    def findTours(self, theme: TourTheme) -> list[Tour]:
+        """그 테마의 투어 전부 (한 테마에 투어가 여럿일 수 있어 고객에게 되물을 때 씀)."""
+        return [tour for tour in self.getAllTours() if tour.tourTheme == theme]
 
     def _isFresh(self) -> bool:
         age = datetime.now() - self._fetchedAt

@@ -36,6 +36,18 @@ BASE_WORDS = ("클래식, 그랜드, 프리미엄, 3성급, 4성급, 5성급, �
               "첫째 날, 둘째 날, 마지막 날, 아침, 점심, 저녁, 출발, 예약, 허니문, 효도, 골프, 트레킹")
 
 
+def tour_words(tours: list[Tour]) -> list[str]:
+    """음성 인식 힌트에 넣을 투어 낱말: 투어 이름의 낱말과 여행지 (겹치는 말, '투어', BASE_WORDS에 있는 말은 뺌).
+
+    Whisper는 힌트의 마지막 224토큰만 보므로 이름 전체를 되풀이하지 않고 낱말로 줄여 BASE_WORDS 뒤에 둔다.
+    """
+    base = set(BASE_WORDS.split(", "))
+    words = []
+    for tour in tours:
+        words += [w for w in tour.name.split() if w != "투어"] + tour.place_words()
+    return [w for w in dict.fromkeys(words) if w not in base]
+
+
 class SpeechRecognizer:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -47,7 +59,7 @@ class SpeechRecognizer:
         wav = self._trimSilence(audio, contentType)
         if self._client is None:
             raise ApiError(503, "STT_UNAVAILABLE", "음성 인식을 쓸 수 없어요. 글로 입력해 주세요.")
-        hint = ", ".join(tour.name for tour in tours) + ", " + BASE_WORDS
+        hint = BASE_WORDS + ", " + ", ".join(tour_words(tours))
         verbose = self.settings.stt_model.startswith("whisper")
         try:
             result = self._client.audio.transcriptions.create(
