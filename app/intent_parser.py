@@ -27,9 +27,9 @@ intent
 - UNKNOWN: 예약과 관계없는 말, 이미 한 예약의 취소나 변경 요청
 
 slots
-- tourTheme: 허니문/신혼=HONEYMOON, 효도/부모님=PARENT, 골프=GOLF, 트레킹/등산=TREKKING
+- tourTheme: 허니문/신혼/결혼한다(웨딩)=HONEYMOON, 효도/부모님=PARENT, 골프=GOLF, 트레킹/등산=TREKKING
 - tourName: 투어 이름이나 여행지를 말해서 투어가 하나로 정해지면 목록에 적힌 그 투어 이름 그대로 (함께 말한 테마로 좁혀도 된다). 테마만 말했거나 여러 투어에 해당하면 null
-- participantsCount: 가는 사람 수 (예: 부모님과 나 = 3)
+- participantsCount: 가는 사람 수 (예: 부모님과 나 = 3, 결혼한다/신혼여행/우리 부부 = 2). 숫자를 말하면 그 숫자
 - tourStyle: 클래식=CLASSIC, 그랜드=GRAND, 프리미엄=PREMIUM. '프리미엄' 한마디는 스타일이다 (뒤에 식사, 레스토랑이 붙을 때만 식사)
 - hotelGrade: 3성=_3_STAR, 4성=_4_STAR, 5성=_5_STAR
 - foodType: 도시락=LUNCHBOX, 현지식/현지 음식/한정식/향토 정식/가이세키/산채 정식처럼 그 지역 음식=LOCAL_RESTAURANT, 스테이크/고급 식사/고급 레스토랑=PREMIUM_RESTAURANT
@@ -37,7 +37,7 @@ slots
 - addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다. 이미 넣은 것에 더하는 말('~에도', '추가')이면 replace=false, 이미 넣은 것을 다른 일차나 끼니로 옮기는 말('~로 바꿔줘', '~ 말고', '~ 대신')이면 replace=true로 하고 nthDays, meals에는 새로 넣을 것만 적는다
 - noAddons: 커피/샴페인을 넣지 않겠다고 함
 - useDefaults: '나머지는 기본으로'처럼 남은 항목을 기본값으로 하겠다고 함
-- answer: 직전 질문에 대한 대답이면 YES 또는 NO
+- answer: 직전 질문에 대한 대답이면 YES 또는 NO ('없어요', '필요 없어요'처럼 거절하는 말은 NO)
 - transportRequested: 차량을 바꾸거나 고르고 싶다고 함
 - pastBookingId: 지난 예약 중 하나를 골라 다시 가고 싶다고 하면 그 예약의 id
 - confidence: 해석이 확실하면 0.9 이상, 애매하면 0.5 이하
@@ -50,12 +50,13 @@ slots
 예시 (아무것도 정하지 않았을 때)
 - 고객 말 "마지막 날 저녁에 샴페인" -> addons=[CHAMPAGNE, nthDays [], meals [DINNER]]
 - 고객 말 "효도 여행 5명" -> tourTheme=PARENT, participantsCount=5. tourName, tourStyle은 null
-- 고객 말 "하와이로 신혼여행 갈래요" -> tourTheme=HONEYMOON, tourName=여행지가 하와이인 투어의 이름
+- 고객 말 "하와이로 신혼여행 갈래요" -> tourTheme=HONEYMOON, tourName=여행지가 하와이인 투어의 이름, participantsCount=2
+- 고객 말 "다음 달 오늘 결혼해요" -> tourTheme=HONEYMOON, participantsCount=2, startDate=오늘의 다음 달 같은 날
 """
 
 
 THEME_WORDS = {
-    r"허니문|신혼": TourTheme.HONEYMOON,
+    r"허니문|신혼|결혼(?!\s*기념)|웨딩": TourTheme.HONEYMOON,
     r"효도|부모님|어르신": TourTheme.PARENT,
     r"골프": TourTheme.GOLF,
     r"트레킹|등산": TourTheme.TREKKING,
@@ -195,6 +196,8 @@ class IntentParser:
             return 2
         match = re.search(r"(\d+|다섯|여섯|일곱|여덟|아홉|열|한|두|세|네)\s*(명|분|사람)", text)
         if match is None:
+            if re.search(r"신혼|결혼(?!\s*기념)|웨딩|우리\s*부부", text):
+                return 2  # 결혼하는 두 사람 (숫자를 말하면 위에서 그 숫자)
             return None
         word = match.group(1)
         return int(word) if word.isdigit() else KOREAN_NUMBERS[word]
@@ -239,6 +242,6 @@ class IntentParser:
         if re.match(r"(네|예|넵|넹|응|좋아|좋습니다|그래|맞아|그걸로|그렇게)+요?(?=\s|[.!,~]|$)(?!\s*(명|분|사람))",
                     stripped):
             return "YES"
-        if re.match(r"(아니|아뇨|싫어)", stripped):
+        if re.match(r"(아니|아뇨|싫어|없어|없습니다|필요\s*없)", stripped):
             return "NO"
         return None

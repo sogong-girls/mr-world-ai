@@ -41,7 +41,15 @@ def unconfirm(confirmed: list[DraftField], field: DraftField):
 
 
 def warn(warnings: list[AiWarning], code: WarningCode, message: str):
-    warnings.append(AiWarning(code=code, message=message))
+    """경고를 더한다 (커피, 샴페인을 함께 말해 같은 경고가 또 나오면 한 번만)."""
+    warning = AiWarning(code=code, message=message)
+    if warning not in warnings:
+        warnings.append(warning)
+
+
+def addon_day_question(tour: Tour | None) -> str:
+    days = f"1~{tour.days}일차, " if tour else ""
+    return f"커피나 샴페인을 몇째 날 어느 끼니에 넣을까요? ({days}아침, 점심, 저녁)"
 
 
 def has_batchim(word: str) -> bool:
@@ -120,8 +128,9 @@ class ChatService:
             elif re.search(r"스타일|등급", text):
                 askedStyles = list(TourStyleType)
         tourChoices = self._tourChoices(nluResult, tour)
+        addonDayAsked = any(w.message == addon_day_question(tour) for w in warnings)  # 경고로 일차를 이미 물음
         lines += self._composeReply(intent, draft, tour, changed, missing, wantsAddons, context.pastBookings,
-                                    askedStyles, tourChoices)
+                                    askedStyles, tourChoices, addonDayAsked)
         return CommandResponse(
             transcript=text,
             intent=intent,
@@ -129,7 +138,7 @@ class ChatService:
             changedFields=changed,
             confirmedFields=confirmed,
             missingFields=missing,
-            reply=" ".join(lines),
+            reply=" ".join(line for line in lines if line),
             warnings=warnings,
         )
 
@@ -328,6 +337,9 @@ class ChatService:
             warn(warnings, WarningCode.OPTION_NOT_AVAILABLE, "이 투어에는 그 추가 옵션이 없어요.")
             return
         wanted = list(dict.fromkeys(addon.nthDays))
+        if not addon.allDays and not wanted:  # 일차를 말하지 않으면 넣지 않고 일차를 묻는다
+            warn(warnings, WarningCode.DAY_OUT_OF_RANGE, addon_day_question(tour))
+            return
         if addon.allDays:
             days = list(range(1, tour.days + 1))
         else:
@@ -383,7 +395,7 @@ class ChatService:
     def _composeReply(self, intent: Intent, draft: BookingDraft, tour: Tour | None, changed: list[DraftField],
                       missing: list[DraftField], wantsAddons: bool, pastBookings: list[PastBooking],
                       askedStyles: list[TourStyleType] | None = None,
-                      tourChoices: list[Tour] | None = None) -> list[str]:
+                      tourChoices: list[Tour] | None = None, addonDayAsked: bool = False) -> list[str]:
         """의도에 맞는 답 + 최소 인원 안내 + 다음 질문을 문장 목록으로 만든다."""
         lines = []
         tourChoices = tourChoices or []
@@ -420,17 +432,19 @@ class ChatService:
             return lines
         if intent == Intent.SUBMIT_BOOKING:
             lines.append("예약하려면 아직 정할 게 있어요.")
-        lines.append(self._askMissing(draft, tour, missing, wantsAddons, tourChoices))
+        lines.append(self._askMissing(draft, tour, missing, wantsAddons, tourChoices, addonDayAsked))
         return lines
 
     def _askMissing(self, draft: BookingDraft, tour: Tour | None, missing: list[DraftField],
-                    wantsAddons: bool, tourChoices: list[Tour] | None = None) -> str:
+                    wantsAddons: bool, tourChoices: list[Tour] | None = None, addonDayAsked: bool = False) -> str:
         """next_questions로 고른 항목(최대 2개)을 묻는다. 호텔, 식사는 스타일 기본값을 추천한다.
 
         투어는 테마부터 묻고(투어 이름 8개를 다 읽어 주면 길다), tourChoices가 있으면(테마의 투어가 여럿)
         그 후보 중에서 묻는다. 스타일은 투어마다 고를 수 있는 것이 달라 투어를 정한 뒤 묻는다.
         """
         asked = next_questions(missing)
+        if addonDayAsked:  # 일차 없이 말한 커피, 샴페인은 경고 문장이 이미 물었다
+            asked = [field for field in asked if field != DraftField.bookingAddons]
         if DraftField.tourId in asked:
             asked = [field for field in asked if field != DraftField.tourStyleId]
         hotel = self._hotelName(draft, tour)
@@ -461,8 +475,7 @@ class ChatService:
                     questions.append("식사는 도시락, 현지식, 스테이크 중 무엇으로 할까요?")
             elif field == DraftField.bookingAddons:
                 if wantsAddons:
-                    days = f"1~{tour.days}일차, " if tour else ""
-                    questions.append(f"커피나 샴페인을 몇째 날 어느 끼니에 넣을까요? ({days}아침, 점심, 저녁)")
+                    questions.append(addon_day_question(tour))
                 else:
                     questions.append("커피나 샴페인을 추가할까요?")
             elif field == DraftField.startAt:
