@@ -138,6 +138,7 @@ class AddonSlot(BaseModel):
     allDays: bool = False
     meals: list[Meal] = Field(default_factory=list)
     replace: bool = False
+    remove: bool = False
 
 
 class Slots(BaseModel):

@@ -34,8 +34,8 @@ slots
 - hotelGrade: 3성=_3_STAR, 4성=_4_STAR, 5성=_5_STAR
 - foodType: 도시락=LUNCHBOX, 현지식/현지 음식/한정식/향토 정식/가이세키/산채 정식처럼 그 지역 음식=LOCAL_RESTAURANT, 스테이크/고급 식사/고급 레스토랑=PREMIUM_RESTAURANT
 - startDate: 출발 날짜 YYYY-MM-DD. '오늘' 줄의 날짜와 요일을 기준으로 계산하고, 연도 없이 말한 날짜가 지났으면 내년. 요일로 말하면 달력에서 찾는다. 다음 주는 오늘이 있는 주(월~일)의 다음 주
-- addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다. 이미 넣은 것에 더하는 말('~에도', '추가')이면 replace=false, 이미 넣은 것을 다른 일차나 끼니로 옮기는 말('~로 바꿔줘', '~ 말고', '~ 대신')이면 replace=true로 하고 nthDays, meals에는 새로 넣을 것만 적는다
-- noAddons: 커피/샴페인을 넣지 않겠다고 함
+- addons: 커피/샴페인을 넣을 일차(nthDays, 1부터)와 끼니(meals). '매일'이면 allDays=true. '마지막 날'처럼 숫자가 아닌 일차는 지금까지 채운 예약의 투어 일수로 계산하고, 투어가 정해지지 않았으면 nthDays를 비운다. 이미 넣은 것에 더하는 말('~에도', '추가')이면 replace=false, 이미 넣은 것을 다른 일차나 끼니로 옮기는 말('~로 바꿔줘', '~ 말고', '~ 대신')이면 replace=true로 하고 nthDays, meals에는 새로 넣을 것만 적는다. 빼 달라는 말('빼줘', '제외해줘', '없애줘')이면 remove=true로 하고 뺄 종류와 말한 일차·끼니만 적는다(말하지 않았으면 비운다). '한 포트', '한 병', '1병'처럼 개수는 일차가 아니다
+- noAddons: 커피/샴페인을 아예 넣지 않겠다고 함 (한 종류나 일부만 빼는 말은 addons의 remove=true)
 - useDefaults: '나머지는 기본으로'처럼 남은 항목을 기본값으로 하겠다고 함
 - answer: 직전 질문에 대한 대답이면 YES 또는 NO ('없어요', '필요 없어요'처럼 거절하는 말은 NO)
 - transportRequested: 차량을 바꾸거나 고르고 싶다고 함
@@ -47,6 +47,8 @@ slots
 - 고객 말 "프리미엄 식사로" -> foodType=PREMIUM_RESTAURANT 하나만. tourStyle은 null
 - 고객 말 "두 명이고 프리미엄 스타일은 뭐가 있어?" -> intent=SEARCH_TOUR, participantsCount=2, tourStyle=PREMIUM
 - 고객 말 "마지막 날 저녁에 샴페인" -> 그 투어가 4일이므로 addons=[CHAMPAGNE, nthDays [4], meals [DINNER]] 하나만
+- 고객 말 "커피는 빼 주세요" -> addons=[COFFEE, nthDays [], meals [], remove=true] 하나만. noAddons는 false
+- 고객 말 "2일차, 3일차 식사에는 샴페인 제외해 주세요" -> addons=[CHAMPAGNE, nthDays [2, 3], meals [], remove=true]
 예시 (아무것도 정하지 않았을 때)
 - 고객 말 "마지막 날 저녁에 샴페인" -> addons=[CHAMPAGNE, nthDays [], meals [DINNER]]
 - 고객 말 "효도 여행 5명" -> tourTheme=PARENT, participantsCount=5. tourName, tourStyle은 null
@@ -154,7 +156,7 @@ class IntentParser:
             foodType=find_value(FOOD_WORDS, text),
             startDate=self._date(text),
             addons=self._addons(text),
-            noAddons=bool(re.search(r"(커피|샴페인|추가|옵션).*(안\s*(할|해|넣)|없|필요\s*없)", text)),
+            noAddons=bool(re.search(r"(커피|샴페인|추가|옵션).*(안\s*(할|해|넣)|없(?!애)|필요\s*없)", text)),
             useDefaults=bool(re.search(r"기본\s*(으로|값)", text)),
             answer=self._answer(text),
             transportRequested=bool(re.search(r"차량|버스|리무진|차\s*(를|도)?\s*바꿔", text)),
@@ -226,16 +228,18 @@ class IntentParser:
             return None
 
     def _addons(self, text: str) -> list[AddonSlot]:
-        addonType = find_value(ADDON_WORDS, text)
-        if addonType is None or re.search(r"안\s*(할|해|넣)|빼|없", text):
+        addonTypes = [addonType for pattern, addonType in ADDON_WORDS.items() if re.search(pattern, text)]
+        if not addonTypes or re.search(r"안\s*(할|해|넣)|없(?!애)", text):
             return []
         days = [int(n) for n in re.findall(r"(\d+)\s*일\s*차", text)]
         for word, number in DAY_WORDS.items():
             if re.search(word + r"(날|째\s*날)", text):
                 days.append(number)
         meals = [meal for pattern, meal in MEAL_WORDS.items() if re.search(pattern, text)]
+        remove = bool(re.search(r"빼|제외|없애", text))
         return [AddonSlot(addonType=addonType, nthDays=sorted(set(days)), allDays="매일" in text, meals=meals,
-                          replace=bool(re.search(r"바꿔|변경|옮겨", text)))]
+                          replace=not remove and bool(re.search(r"바꿔|변경|옮겨", text)), remove=remove)
+                for addonType in addonTypes]
 
     def _answer(self, text: str) -> str | None:
         stripped = text.strip()
