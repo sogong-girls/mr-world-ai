@@ -198,7 +198,7 @@ class ChatService:
             for addon in slots.addons:
                 self._applyAddon(tour, addon, draft, confirmed, warnings)
 
-        if slots.noAddons:
+        if slots.noAddons and not any(addon.remove for addon in slots.addons):  # 한 종류만 빼는 말이면 나머지는 둔다
             draft.bookingAddons = []
             confirm(confirmed, DraftField.bookingAddons)
         if slots.startDate:
@@ -337,6 +337,9 @@ class ChatService:
             warn(warnings, WarningCode.OPTION_NOT_AVAILABLE, "이 투어에는 그 추가 옵션이 없어요.")
             return
         wanted = list(dict.fromkeys(addon.nthDays))
+        if addon.remove:
+            self._removeAddon(tour, option.id, addon, wanted, draft, warnings)
+            return
         if not addon.allDays and not wanted:  # 일차를 말하지 않으면 넣지 않고 일차를 묻는다
             warn(warnings, WarningCode.DAY_OUT_OF_RANGE, addon_day_question(tour))
             return
@@ -359,6 +362,21 @@ class ChatService:
                 if item not in draft.bookingAddons:
                     draft.bookingAddons.append(item)
         confirm(confirmed, DraftField.bookingAddons)
+
+    def _removeAddon(self, tour: Tour, optionId: int, addon: AddonSlot, wanted: list[int], draft: BookingDraft,
+                     warnings: list[AiWarning]):
+        """말한 종류의 addon을 뺀다. 일차·끼니를 말하면 그 칸만, 말하지 않으면 그 종류 전부 (확인 상태는 그대로)."""
+        days = [day for day in wanted if 1 <= day <= tour.days]
+        if len(days) < len(wanted):
+            warn(warnings, WarningCode.DAY_OUT_OF_RANGE,
+                 f"{tour.name}는 {tour.days}일 일정이에요. 1~{tour.days}일차 중에서 골라 주세요.")
+            if not days:
+                return
+        if addon.allDays or not wanted:
+            days = list(range(1, tour.days + 1))
+        meals = addon.meals or ALL_MEALS
+        draft.bookingAddons = [item for item in draft.bookingAddons
+                               if not (item.addonOptionId == optionId and item.nthDay in days and item.meal in meals)]
 
     def _useDefaults(self, tour: Tour | None, draft: BookingDraft, confirmed: list[DraftField]):
         style = None
